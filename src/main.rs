@@ -1,7 +1,7 @@
 //use byteorder::{BigEndian, ByteOrder};
 use std::fs::File;
 use std::io::{Error, ErrorKind, Read, Result, Seek, SeekFrom};
-use std::{env, fmt, mem};
+use std::{env, fmt};
 //use std::mem::MaybeUninit;
 use std::slice;
 
@@ -13,8 +13,6 @@ const GPS: u16 = 0x8825; // GPS data.
 #[repr(C)]
 #[repr(packed)]
 struct ExifBody {
-    exif: u32,
-    zeros: u16,
     tiff: u16,
     size: u16,
     offset: u32,
@@ -29,9 +27,53 @@ struct IfdEntry {
     offset: u32,
 }
 
+struct BufReader {
+    cursor: usize,
+    buffer: Vec<u8>,
+}
+
+impl BufReader {
+    pub fn init(&mut self, mut f: &File, size: usize) -> Result<()> {
+        self.buffer = vec![0u8; size];
+        f.read_exact(&mut self.buffer)
+    }
+
+    #[allow(dead_code)]
+    pub fn dump(&self, num: usize) {
+        let mut i: usize = 0;
+
+        while i < num {
+            print!(" {:02x}", self.buffer[i]);
+            i += 1;
+        }
+        println!("");
+    }
+
+    pub fn set_cursor(&mut self, new_cursor: usize) -> Result<()> {
+        if new_cursor >= self.buffer.len() {
+            Err(Error::from(ErrorKind::UnexpectedEof))
+        } else {
+            self.cursor = new_cursor;
+            Ok(())
+        }
+    }
+}
+
+impl Read for BufReader {
+    fn read(&mut self, buf: &mut [u8]) -> Result<usize> {
+        if self.cursor + buf.len() > self.buffer.len() {
+            Err(Error::from(ErrorKind::UnexpectedEof))
+        } else {
+            buf.copy_from_slice(&self.buffer[self.cursor..self.cursor + buf.len()]);
+            self.cursor += buf.len();
+            Ok(buf.len())
+        }
+    }
+}
+
 impl ExifBody {
     fn is_valid(&self) -> bool {
-        self.exif == 0x66697845 && self.zeros == 0 && self.tiff == 0x4949 && self.offset == 8
+        self.tiff == 0x4949 && self.offset == 8
     }
 }
 
@@ -55,18 +97,40 @@ impl fmt::Display for ExifBody {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         write!(
             f,
-            "exif: {:x}, zeros: {}, tiff {:x}, size {}, offset {}",
-            self.exif, self.zeros, self.tiff, self.size, self.offset
+            "tiff {:x}, size {}, offset {}",
+            self.tiff, self.size, self.offset
         )
     }
 }
 
 #[allow(deprecated)]
-fn read_struct<T>(mut f: &File) -> Result<T> {
+fn read_struct<T, R: Read>(f: &mut R) -> Result<T> {
     let num_bytes = str_len::<T>();
     unsafe {
         let mut s = ::std::mem::uninitialized();
         let buffer = slice::from_raw_parts_mut(&mut s as *mut T as *mut u8, num_bytes);
+        match f.read(buffer) {
+            Ok(num) => {
+                if num == num_bytes {
+                    Ok(s)
+                } else {
+                    Err(Error::from(ErrorKind::UnexpectedEof))
+                }
+            }
+            Err(e) => {
+                ::std::mem::forget(s);
+                Err(e)
+            }
+        }
+    }
+}
+
+/*
+#[allow(deprecated)]
+fn read_buf(mut f: &File, num_bytes: usize) -> Result<*mut u8> {
+    unsafe {
+        let s = ::std::mem::uninitialized();
+        let buffer = slice::from_raw_parts_mut(s as *mut u8, num_bytes);
         match f.read_exact(buffer) {
             Ok(()) => Ok(s),
             Err(e) => {
@@ -77,7 +141,6 @@ fn read_struct<T>(mut f: &File) -> Result<T> {
     }
 }
 
-/*
 fn read_struct<T>(mut f: &File) -> Result<T> {
     let num_bytes = ::std::mem::size_of::<T>();
     unsafe {
@@ -94,59 +157,81 @@ fn read_struct<T>(mut f: &File) -> Result<T> {
 }
 */
 
-fn read_u16(mut f: &File) -> Result<u16> {
+fn read_u16<T: Read>(f: &mut T) -> Result<u16> {
     let mut tag = [0u8; 2];
     f.read(&mut tag)?;
     Ok(u16::from_le_bytes(tag))
 }
 
-fn read_tag(mut f: &File) -> Result<u16> {
+fn read_tag<T: Read>(f: &mut T) -> Result<u16> {
     let mut tag = [0u8; 2];
     f.read(&mut tag)?;
     Ok(u16::from_be_bytes(tag))
 }
 
 #[allow(safe_packed_borrows)]
-fn handle_app1(mut f: &File, len: u16) -> Result<()> {
-    let mut togo = len;
+fn handle_app1(f: &mut File, len: u16) -> Result<()> {
+    println!("Expected len {:x} {}", len, len);
+    const ADVANCE: u16 = 6;
+    f.seek(SeekFrom::Current(ADVANCE as i64))?;
+    let mut buffer = BufReader {
+        cursor: 0,
+        buffer: vec![0u8; 0],
+    };
 
-    let eb = read_struct::<ExifBody>(f)?;
-    togo = togo - str_len::<ExifBody>() as u16;
-
+    buffer.init(&f, (len - ADVANCE) as usize)?;
+    let eb = read_struct::<ExifBody, BufReader>(&mut buffer)?;
     if !eb.is_valid() {
-        eprintln!(
-            "Bad  exif header: {:x}, zeros {}, tiff {:x}, size {}, offset {}",
-            eb.exif, eb.zeros, eb.tiff, eb.size, eb.offset
-        );
+        eprintln!("Bad  exif header: {}", eb);
+
         let err = ErrorKind::InvalidData;
         return Err(Error::from(err));
     }
-    println!("Tiff header {}", eb);
 
-    let mut num_entries = read_u16(f)?;
-    togo = togo - mem::size_of_val(&num_entries) as u16;
-
+    let mut num_entries = read_u16(&mut buffer)?;
     println!("Found {} directory entries", num_entries);
     while num_entries != 0 {
-        let entry = read_struct::<IfdEntry>(f)?;
-        togo = togo - str_len::<IfdEntry>() as u16;
+        let entry = read_struct::<IfdEntry, BufReader>(&mut buffer)?;
         if entry.tag == GPS {
             println!("  {}", entry);
-            let seek_for:i64 = (entry.offset - 8 + togo as u32 - len as u32) as i64;
-            f.seek(SeekFrom::Current(seek_for))?;
-            let gps_tag = read_tag(f)?;
-            println!("advanced for {} got tag {:x}", seek_for, gps_tag);
+            buffer.set_cursor(entry.offset as usize)?;
+            let gps_tag = read_tag(&mut buffer)?;
+            println!("advanced to {} got tag {:x}", entry.offset, gps_tag);
         }
         num_entries = num_entries - 1;
     }
+
     Ok(())
+
+    /*
+        let mut togo = len;
+
+        togo = togo - str_len::<ExifBody>() as u16;
+
+        let mut num_entries = read_u16(f)?;
+        togo = togo - mem::size_of_val(&num_entries) as u16;
+
+        println!("Found {} directory entries", num_entries);
+        while num_entries != 0 {
+            let entry = read_struct::<IfdEntry>(f)?;
+            togo = togo - str_len::<IfdEntry>() as u16;
+            if entry.tag == GPS {
+                println!("  {}", entry);
+                let seek_for:i64 = (entry.offset - 8 + togo as u32 - len as u32) as i64;
+                f.seek(SeekFrom::Current(seek_for))?;
+                let gps_tag = read_tag(f)?;
+                println!("advanced for {} got tag {:x}", seek_for, gps_tag);
+            }
+            num_entries = num_entries - 1;
+        }
+    */
 }
 
 fn parse_file(name: &String) -> Result<()> {
     let mut f = File::open(name)?;
     let err = Err(Error::from(ErrorKind::InvalidData));
 
-    let t = read_tag(&f)?;
+    let t = read_tag(&mut f)?;
     if t != SOI {
         eprintln!("File {} does not seem to be a photo image file ", name);
         return err;
@@ -154,18 +239,18 @@ fn parse_file(name: &String) -> Result<()> {
 
     print!("{}: ", name);
     loop {
-        let t = read_tag(&f)?;
+        let t = read_tag(&mut f)?;
 
         if t == SOS {
             break;
         }
-        let len = read_tag(&f)? - 2;
+        let len = read_tag(&mut f)? - 2;
 
         match t {
             APP1 => {
-                handle_app1(&f, len)?;
+                handle_app1(&mut f, len)?;
                 return Ok(());
-            },
+            }
             _ => {
                 f.seek(SeekFrom::Current(i64::from(len)))?;
                 print!("{:x}:{}: ", t, len + 2);
