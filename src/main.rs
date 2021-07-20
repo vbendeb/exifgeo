@@ -86,7 +86,7 @@ impl fmt::Display for IfdEntry {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         write!(
             f,
-            "tag: {:x}, type: {}, count {}, offset {}",
+            "tag: {:04x}, type: {}, count {}, offset {}",
             self.tag, self.typ_e, self.count, self.offset
         )
     }
@@ -169,6 +169,19 @@ fn read_tag<T: Read>(f: &mut T) -> Result<u16> {
     Ok(u16::from_be_bytes(tag))
 }
 
+fn process_gps_section(buffer: &mut BufReader) -> Result<u16> {
+    let num_entries = read_u16(buffer)?;
+    let mut i:u16 = 0;
+
+    println!("{} entries in gps table:", num_entries);
+    while i < num_entries {
+        let entry = read_struct::<IfdEntry, BufReader>(buffer)?;
+        println!("{}", entry);
+        i += 1;
+    }
+    Ok(0)
+}
+
 #[allow(safe_packed_borrows)]
 fn handle_app1(f: &mut File, len: u16) -> Result<()> {
     println!("Expected len {:x} {}", len, len);
@@ -195,36 +208,12 @@ fn handle_app1(f: &mut File, len: u16) -> Result<()> {
         if entry.tag == GPS {
             println!("  {}", entry);
             buffer.set_cursor(entry.offset as usize)?;
-            let gps_tag = read_tag(&mut buffer)?;
-            println!("advanced to {} got tag {:x}", entry.offset, gps_tag);
+            process_gps_section(&mut buffer)?;
         }
         num_entries = num_entries - 1;
     }
 
     Ok(())
-
-    /*
-        let mut togo = len;
-
-        togo = togo - str_len::<ExifBody>() as u16;
-
-        let mut num_entries = read_u16(f)?;
-        togo = togo - mem::size_of_val(&num_entries) as u16;
-
-        println!("Found {} directory entries", num_entries);
-        while num_entries != 0 {
-            let entry = read_struct::<IfdEntry>(f)?;
-            togo = togo - str_len::<IfdEntry>() as u16;
-            if entry.tag == GPS {
-                println!("  {}", entry);
-                let seek_for:i64 = (entry.offset - 8 + togo as u32 - len as u32) as i64;
-                f.seek(SeekFrom::Current(seek_for))?;
-                let gps_tag = read_tag(f)?;
-                println!("advanced for {} got tag {:x}", seek_for, gps_tag);
-            }
-            num_entries = num_entries - 1;
-        }
-    */
 }
 
 fn parse_file(name: &String) -> Result<()> {
