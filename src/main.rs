@@ -69,11 +69,27 @@ impl Coordinate {
     }
 }
 
+impl fmt::Display for Coordinate {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        write!(f, "{:2.5}{}", self.value, self.quadrant)
+    }
+}
+
 struct GpsInfo {
     file_name: String,
     lat: Coordinate,
     longt: Coordinate,
     time: u64,
+}
+
+impl fmt::Display for GpsInfo {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        write!(
+            f,
+            "file: {} {} {} {}",
+            self.file_name, self.lat, self.longt, self.time
+        )
+    }
 }
 
 fn get_num(bytes: &[u8]) -> Result<u64> {
@@ -318,6 +334,7 @@ fn process_gps_section(buffer: &mut BufReader, name: &String) -> Result<()> {
     let mut essentials: usize = 0;
     let mut waypoint: GpsInfo = GpsInfo::new();
 
+    waypoint.file_name = name.to_string();
     while i < num_entries {
         let entry = read_struct::<IfdEntry, BufReader>(buffer)?;
 
@@ -346,11 +363,10 @@ fn process_gps_section(buffer: &mut BufReader, name: &String) -> Result<()> {
         i += 1;
     }
     if essentials == NUM_ESSENTIAL_ENTRIES {
-        waypoint.file_name = name.to_string();
         unsafe { WAYPOINTS.push(waypoint) };
         Ok(())
     } else {
-        eprintln!("Missing essential GPS entry/ies");
+        eprintln!("Missing essential GPS entry/ies {}", waypoint);
         Err(Error::from(ErrorKind::InvalidData))
     }
 }
@@ -398,7 +414,6 @@ fn parse_file(name: &String) -> Result<()> {
         return err;
     }
 
-    print!("{}: ", name);
     loop {
         let t = read_tag(&mut f)?;
 
@@ -421,11 +436,30 @@ fn parse_file(name: &String) -> Result<()> {
     err
 }
 
+fn print_xml() {
+    let mut filtered: Vec<&GpsInfo> = Vec::new();
+
+    unsafe {
+        WAYPOINTS.sort_by(|a, b| a.time.cmp(&b.time));
+        filtered.push(&WAYPOINTS[0]);
+
+        for i in 1..WAYPOINTS.len() {
+            if WAYPOINTS[i].time != WAYPOINTS[i - 1].time {
+                filtered.push(&WAYPOINTS[i]);
+            }
+        }
+    }
+    for w in filtered.iter() {
+        println!("{}", w);
+    }
+}
+
 fn main() -> Result<()> {
     let args: Vec<String> = env::args().collect();
 
     for f in &args[1..] {
         parse_file(f)?;
     }
+    print_xml();
     Ok(())
 }
