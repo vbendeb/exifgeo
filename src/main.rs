@@ -436,6 +436,65 @@ fn parse_file(name: &String) -> Result<()> {
     err
 }
 
+fn print_time(time:u64) {
+    let mut run = time;
+
+    let sec = run % 60;
+    run /= 60;
+
+    let min = run % 60;
+    run /= 60;
+
+    let hour = run % 24;
+    run /= 24;
+
+    let day = run % 31 + 1;
+    run /= 31;
+
+    let month = run % 12 + 1;
+    let year = run / 12;
+
+    print!("<time>{}-{:02}-{:02}T{:02}:{:02}:{:02}Z</time>", year, month, day, hour, min, sec);
+}
+
+fn print_trackpoint(point: &GpsInfo) {
+    print!("<trkpt ");
+
+    print!("lat=\"");
+    if point.lat.quadrant == 'S' {
+        print!("-");
+    }
+    print!("{:2.5}\" ", point.lat.value);
+
+    print!("lon=\"");
+    if point.longt.quadrant == 'W' {
+        print!("-");
+    }
+    print!("{:2.5}\"> ", point.longt.value);
+
+    print_time(point.time);
+    println!("</trkpt>");
+}
+
+fn print_track(track: &Vec<&GpsInfo>) {
+    println!("<trk>");
+    println!("<name>Iceland Vacation</name><number>1</number>");
+    println!("<trkseg>");
+    for w in track.iter() {
+        print_trackpoint(w);
+    }
+    println!("</trkseg>");
+    println!("</trk>");
+}
+
+fn print_gpx(track: &Vec<&GpsInfo>) {
+    println!("<gpx version=\"1.1\" creator=\"http://github.com/vbendeb/photohandler\">");
+    println!("<name>Iceland Vacation</name>");
+    print_track(&track);
+    println!("</gpx>");
+
+}
+
 fn print_xml() {
     let mut filtered: Vec<&GpsInfo> = Vec::new();
 
@@ -449,9 +508,8 @@ fn print_xml() {
             }
         }
     }
-    for w in filtered.iter() {
-        println!("{}", w);
-    }
+    println!("<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\" ?>");
+    print_gpx(&filtered);
 }
 
 fn main() -> Result<()> {
