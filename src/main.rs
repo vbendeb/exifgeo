@@ -364,11 +364,10 @@ fn process_gps_section(buffer: &mut BufReader, name: &String) -> Result<()> {
     }
     if essentials == NUM_ESSENTIAL_ENTRIES {
         unsafe { WAYPOINTS.push(waypoint) };
-        Ok(())
     } else {
         eprintln!("Missing essential GPS entry/ies {}", waypoint);
-        Err(Error::from(ErrorKind::InvalidData))
     }
+    Ok(())
 }
 
 #[allow(safe_packed_borrows)]
@@ -384,10 +383,8 @@ fn handle_app1(f: &mut File, len: u16, name: &String) -> Result<()> {
     buffer.init(&f, (len - ADVANCE) as usize)?;
     let eb = read_struct::<ExifBody, BufReader>(&mut buffer)?;
     if !eb.is_valid() {
-        eprintln!("Bad  exif header: {}", eb);
-
-        let err = ErrorKind::InvalidData;
-        return Err(Error::from(err));
+        eprintln!("{}: Bad exif header: {}", name, eb);
+        return Ok(());
     }
 
     let mut num_entries = read_u16(&mut buffer)?;
@@ -400,8 +397,8 @@ fn handle_app1(f: &mut File, len: u16, name: &String) -> Result<()> {
         }
         num_entries = num_entries - 1;
     }
-    eprintln!("No GPS section found");
-    Err(Error::from(ErrorKind::InvalidData))
+    eprintln!("No GPS section found in {}", name);
+    Ok(())
 }
 
 fn parse_file(name: &String) -> Result<()> {
@@ -429,7 +426,6 @@ fn parse_file(name: &String) -> Result<()> {
             }
             _ => {
                 f.seek(SeekFrom::Current(i64::from(len)))?;
-                print!("{:x}:{}: ", t, len + 2);
             }
         }
     }
