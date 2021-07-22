@@ -1,9 +1,10 @@
-//use byteorder::{BigEndian, ByteOrder};
+extern crate getopts;
+use arrayvec::ArrayVec;
+use getopts::Options;
 use std::fs::File;
-use std::io::{Error, ErrorKind, Read, Result, Seek, SeekFrom};
-use std::{char, env, fmt, str};
-//use std::mem::MaybeUninit;
+use std::io::{Error, ErrorKind, Read, Result, Seek, SeekFrom, Write};
 use std::slice;
+use std::{char, env, fmt, str};
 
 const SOI: u16 = 0xffd8; // Start Of Image.
 const SOS: u16 = 0xffda; // Start Of Scan.
@@ -19,6 +20,8 @@ const TIMESTAMP: u16 = 7; // GPS timestamp.
 const DATESTAMP: u16 = 0x1d; // GPS Date.
 
 const NUM_ESSENTIAL_ENTRIES: usize = 6;
+
+type AV = ArrayVec<u8, 1_000_000>;
 
 struct Coordinate {
     quadrant: char,
@@ -432,7 +435,11 @@ fn parse_file(name: &String) -> Result<()> {
     err
 }
 
-fn print_time(time:u64) {
+// GPS Date and time were combined and saved as number of seconds starting on
+// Jan 1 0. For simplicity when converting calendar date to this value all
+// months were considered to have 31 days. Use this when converting the number
+// of seconds back into the real date.
+fn print_time(time: u64, av: &mut AV) -> Result<()> {
     let mut run = time;
 
     let sec = run % 60;
@@ -450,48 +457,54 @@ fn print_time(time:u64) {
     let month = run % 12 + 1;
     let year = run / 12;
 
-    print!("<time>{}-{:02}-{:02}T{:02}:{:02}:{:02}Z</time>", year, month, day, hour, min, sec);
+    write!(
+        av,
+        "<time>{}-{:02}-{:02}T{:02}:{:02}:{:02}Z</time>",
+        year, month, day, hour, min, sec
+    )
 }
 
-fn print_trackpoint(point: &GpsInfo) {
-    print!("<trkpt ");
+fn print_trackpoint(point: &GpsInfo, av: &mut AV) -> Result<()> {
+    write!(av, "<trkpt ")?;
 
-    print!("lat=\"");
+    write!(av, "lat=\"")?;
     if point.lat.quadrant == 'S' {
-        print!("-");
+        write!(av, "-")?;
     }
-    print!("{:2.5}\" ", point.lat.value);
+    write!(av, "{:2.5}\" ", point.lat.value)?;
 
-    print!("lon=\"");
+    write!(av, "lon=\"")?;
     if point.longt.quadrant == 'W' {
-        print!("-");
+        write!(av, "-")?;
     }
-    print!("{:2.5}\"> ", point.longt.value);
+    write!(av, "{:2.5}\"> ", point.longt.value)?;
 
-    print_time(point.time);
-    println!("</trkpt>");
+    print_time(point.time, av)?;
+    writeln!(av, "</trkpt>")
 }
 
-fn print_track(track: &Vec<&GpsInfo>) {
-    println!("<trk>");
-    println!("<name>Iceland Vacation</name><number>1</number>");
-    println!("<trkseg>");
+fn print_track(track: &Vec<&GpsInfo>, av: &mut AV, map_name: &String) -> Result<()> {
+    writeln!(av, "<trk>")?;
+    writeln!(av, "<name>{}</name><number>1</number>", map_name)?;
+    writeln!(av, "<trkseg>")?;
     for w in track.iter() {
-        print_trackpoint(w);
+        print_trackpoint(w, av)?;
     }
-    println!("</trkseg>");
-    println!("</trk>");
+    writeln!(av, "</trkseg>")?;
+    writeln!(av, "</trk>")
 }
 
-fn print_gpx(track: &Vec<&GpsInfo>) {
-    println!("<gpx version=\"1.1\" creator=\"http://github.com/vbendeb/photohandler\">");
-    println!("<name>Iceland Vacation</name>");
-    print_track(&track);
-    println!("</gpx>");
-
+fn print_gpx(track: &Vec<&GpsInfo>, av: &mut AV, map_name: &String) -> Result<()> {
+    writeln!(
+        av,
+        "<gpx version=\"1.1\" creator=\"git@github.com:vbendeb/exifgeo.git\">"
+    )?;
+    writeln!(av, "<name>{}</name>", map_name)?;
+    print_track(&track, av, map_name)?;
+    writeln!(av, "</gpx>")
 }
 
-fn print_xml() {
+fn print_xml(av: &mut AV, map_name: &String) -> Result<()> {
     let mut filtered: Vec<&GpsInfo> = Vec::new();
 
     unsafe {
@@ -504,16 +517,72 @@ fn print_xml() {
             }
         }
     }
-    println!("<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\" ?>");
-    print_gpx(&filtered);
+    writeln!(
+        av,
+        "<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\" ?>"
+    )?;
+    print_gpx(&filtered, av, map_name)
+}
+
+fn prepare_opts() -> Options {
+    let mut o = Options::new();
+
+    o.reqopt("n", "map_name", "Name of the generated map, REQUIRED", "");
+    o.optopt(
+        "o",
+        "output_file",
+        "Output file name, console by default",
+        "",
+    );
+    o.optflag("h", "help", "Print this help menu");
+    o
+}
+
+fn print_usage(program: &str, o: Options) {
+    let brief = format!("Usage: {} FILE [options] exif_files...", program);
+    print!("{}", o.usage(&brief));
 }
 
 fn main() -> Result<()> {
     let args: Vec<String> = env::args().collect();
+    let o = prepare_opts();
+    let mut base = 3; // If only the required arg is given.
 
-    for f in &args[1..] {
+    let matches = match o.parse(&args[1..]) {
+        Ok(m) => m,
+        Err(f) => {
+            eprintln!("{}", f.to_string());
+            return Err(Error::from(ErrorKind::InvalidData));
+        }
+    };
+
+    if matches.opt_present("h") {
+        print_usage(&args[0], o);
+        return Ok(());
+    }
+
+    base += match matches.opt_str("o") {
+        Some(_) => 2,
+        None => 0,
+    };
+
+    for f in &args[base..] {
         parse_file(f)?;
     }
-    print_xml();
+
+    // -n is a required option.
+    let map_name = matches.opt_str("n").unwrap();
+    let mut buf = AV::new();
+    print_xml(&mut buf, &map_name)?;
+
+    let txt = std::str::from_utf8(&buf).unwrap();
+    match matches.opt_str("o") {
+        Some(name) => {
+            let mut f = File::create(name)?;
+            f.write(&buf)?;
+        }
+        None => println!("{}", txt),
+    };
+
     Ok(())
 }
