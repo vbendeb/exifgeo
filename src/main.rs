@@ -21,7 +21,10 @@ const DATESTAMP: u16 = 0x1d; // GPS Date.
 
 const NUM_ESSENTIAL_ENTRIES: usize = 6;
 
+#[cfg(not(test))]
 type AV = ArrayVec<u8, 1_000_000>;
+#[cfg(test)]
+type AV = ArrayVec<u8, 1_000>;
 
 struct Coordinate {
     quadrant: char,
@@ -585,4 +588,23 @@ fn main() -> Result<()> {
     };
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_parse_file() -> Result<()>{
+        let test_data = String::from("src/test_data/test.exif");
+
+        parse_file(&test_data)?;
+
+        let mut buf:AV = AV::new();
+        let map_name = String::from("Test map");
+        print_xml(&mut buf, &map_name)?;
+
+        println!("{}", std::str::from_utf8(&buf).unwrap());
+        Ok(())
+    }
 }
