@@ -510,7 +510,7 @@ fn print_xml(av: &mut AV, map_name: &String) -> Result<()> {
 fn prepare_opts() -> Options {
     let mut o = Options::new();
 
-    o.reqopt("n", "map_name", "Name of the generated map, REQUIRED", "");
+    o.optopt("m", "map_name", "Name of the generated map, REQUIRED", "");
     o.optopt(
         "o",
         "output_file",
@@ -522,7 +522,7 @@ fn prepare_opts() -> Options {
 }
 
 fn print_usage(program: &str, o: Options) {
-    let brief = format!("Usage: {} FILE [options] exif_files...", program);
+    let brief = format!("Usage: {} [options] exif_files...", program);
     print!("{}", o.usage(&brief));
 }
 
@@ -542,6 +542,11 @@ fn main() -> Result<()> {
     if matches.opt_present("h") {
         print_usage(&args[0], o);
         return Ok(());
+    }
+
+    if matches.opt_present("m") {
+        eprintln!("Error: map name argument is required");
+        return Err(Error::from(ErrorKind::InvalidData));
     }
 
     base += match matches.opt_str("o") {

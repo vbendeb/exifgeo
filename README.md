@@ -16,10 +16,10 @@ which should result in creating of the executable `target/debug/exifgeo`
 
 The following command line options are supported:
 ```
-Usage: target/debug/exifgeo FILE [options] exif_files...
+Usage: target/debug/exifgeo [options] exif_files...
 
 Options:
-    -n, --map_name      Name of the generated map, REQUIRED
+    -m, --map_name      Name of the generated map, REQUIRED
     -o, --output_file   Output file name, console by default
     -h, --help          Print this help menu
 ```
