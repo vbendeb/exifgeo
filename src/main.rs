@@ -37,7 +37,7 @@ fn floats_from_rational(buf: &mut BufReader, offset: u32, floats: &mut [f64]) ->
     buf.save_cursor();
     buf.set_cursor(offset as usize)?;
     buf.read(&mut rational)?;
-    buf.restore_cursor()?;
+    buf.restore_cursor();
     while i < floats.len() {
         let mut u32v = [0u8; 4];
 
@@ -122,7 +122,7 @@ impl GpsInfo {
         buf.save_cursor();
         buf.set_cursor(offset as usize)?;
         buf.read(&mut date)?;
-        buf.restore_cursor()?;
+        buf.restore_cursor();
 
         let year = get_num(&date[0..4])?;
         let month = get_num(&date[5..7])?;
@@ -192,14 +192,8 @@ impl BufReader {
         self.cursor_stack.push(self.cursor);
     }
 
-    pub fn restore_cursor(&mut self) -> Result<()> {
-        match self.cursor_stack.pop() {
-            Some(v) => {
-                self.cursor = v;
-                Ok(())
-            }
-            None => Err(Error::from(ErrorKind::UnexpectedEof)),
-        }
+    pub fn restore_cursor(&mut self) {
+        self.cursor = self.cursor_stack.pop().expect("cursor stack is empty!");
     }
 }
 
@@ -327,24 +321,14 @@ fn process_gps_section(buffer: &mut BufReader, name: &String) -> Result<()> {
 
         essentials += 1;
         match entry.tag {
-            LAT_Q => match char::from_u32(entry.offset) {
-                Some(c) => {
-                    lat_sign = if c == 'S' { -1.0 } else { 1.0 };
-                }
-                None => {
-                    eprintln!("Invalid latitued quadrant");
-                    return Err(Error::from(ErrorKind::InvalidData));
-                }
-            },
-            LONG_Q => match char::from_u32(entry.offset) {
-                Some(c) => {
-                    longt_sign = if c == 'W' { -1.0 } else { 1.0 };
-                }
-                None => {
-                    eprintln!("Invalid longitude quadrant");
-                    return Err(Error::from(ErrorKind::InvalidData));
-                }
-            },
+            LAT_Q => {
+                let c = char::from_u32(entry.offset).expect("Bad lat_q value");
+                lat_sign = if c == 'S' { -1.0 } else { 1.0 };
+            }
+            LONG_Q => {
+                let c = char::from_u32(entry.offset).expect("Bad long_q value");
+                longt_sign = if c == 'W' { -1.0 } else { 1.0 };
+            }
             LAT_V => waypoint.lat = f64_from_ifd(buffer, entry.offset)?,
             LONG_V => waypoint.longt = f64_from_ifd(buffer, entry.offset)?,
             TIMESTAMP => waypoint.process_timestamp(buffer, entry.offset)?,
