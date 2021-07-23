@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="UTF-8" standalone="yes" ?>
+<gpx version="1.1" creator="git@github.com:vbendeb/exifgeo.git">
+<name>Test map</name>
+<trk>
+<name>Test map</name><number>1</number>
+<trkseg>
+<trkpt lat="-54.81007" lon="-68.31600"> <time>2018-01-27T13:25:00Z</time></trkpt>
+<trkpt lat="49.60064" lon="11.00631"> <time>2018-09-14T17:49:27Z</time></trkpt>
+<trkpt lat="-33.85743" lon="151.23981"> <time>2020-01-21T06:10:56Z</time></trkpt>
+<trkpt lat="66.04575" lon="-17.34345"> <time>2021-07-09T13:33:57Z</time></trkpt>
+</trkseg>
+</trk>
+</gpx>

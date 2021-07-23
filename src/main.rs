@@ -3,8 +3,7 @@ use arrayvec::ArrayVec;
 use getopts::Options;
 use std::fs::File;
 use std::io::{Error, ErrorKind, Read, Result, Seek, SeekFrom, Write};
-use std::slice;
-use std::{char, env, fmt, str};
+use std::{char, env, fmt, slice, str};
 
 const SOI: u16 = 0xffd8; // Start Of Image.
 const SOS: u16 = 0xffda; // Start Of Scan.
@@ -21,6 +20,7 @@ const DATESTAMP: u16 = 0x1d; // GPS Date.
 
 const NUM_ESSENTIAL_ENTRIES: usize = 6;
 
+// When running in test mode stack size is reduced.
 #[cfg(not(test))]
 type AV = ArrayVec<u8, 1_000_000>;
 #[cfg(test)]
@@ -593,18 +593,27 @@ fn main() -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::fs;
 
     #[test]
-    fn test_parse_file() -> Result<()>{
-        let test_data = String::from("src/test_data/test.exif");
+    fn test_parse_file() -> Result<()> {
+        for i in 0..4 {
+            let test_data: String = format!("src/test_data/test{}.jpg", i);
 
-        parse_file(&test_data)?;
+            parse_file(&test_data)?;
+        }
 
-        let mut buf:AV = AV::new();
+        let mut buf: AV = AV::new();
         let map_name = String::from("Test map");
         print_xml(&mut buf, &map_name)?;
 
-        println!("{}", std::str::from_utf8(&buf).unwrap());
-        Ok(())
+        let expected: String =
+            fs::read_to_string("src/test_data/result.txt").expect("Failed to read result.txt");
+
+        if expected == std::str::from_utf8(&buf).unwrap() {
+            Ok(())
+        } else {
+            Err(Error::from(ErrorKind::InvalidData))
+        }
     }
 }
