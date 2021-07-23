@@ -26,11 +26,6 @@ type AV = ArrayVec<u8, 1_000_000>;
 #[cfg(test)]
 type AV = ArrayVec<u8, 1_000>;
 
-struct Coordinate {
-    quadrant: char,
-    value: f64,
-}
-
 fn floats_from_rational(buf: &mut BufReader, offset: u32, floats: &mut [f64]) -> Result<()> {
     let mut rational = [0u8; 24];
     let mut i: usize = 0;
@@ -56,35 +51,19 @@ fn floats_from_rational(buf: &mut BufReader, offset: u32, floats: &mut [f64]) ->
     Ok(())
 }
 
-impl Coordinate {
-    pub fn new() -> Self {
-        Self {
-            quadrant: 'x',
-            value: 0.0,
-        }
-    }
+fn f64_from_ifd(buf: &mut BufReader, offset: u32) -> Result<f64> {
+    let mut floats = [0f64; 3];
 
-    pub fn get_from_ifd(&mut self, buf: &mut BufReader, offset: u32) -> Result<()> {
-        let mut floats = [0f64; 3];
+    floats_from_rational(buf, offset, &mut floats)?;
+    let value: u64 = ((floats[0] + (floats[1] * 60.0 + floats[2]) / 3600.0) * 100000.0) as u64;
 
-        floats_from_rational(buf, offset, &mut floats)?;
-        let value: u64 = ((floats[0] + (floats[1] * 60.0 + floats[2]) / 3600.0) * 100000.0) as u64;
-        self.value = value as f64 / 100000.0;
-
-        Ok(())
-    }
-}
-
-impl fmt::Display for Coordinate {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        write!(f, "{:2.5}{}", self.value, self.quadrant)
-    }
+    Ok(value as f64 / 100000.0)
 }
 
 struct GpsInfo {
     file_name: String,
-    lat: Coordinate,
-    longt: Coordinate,
+    lat: f64,
+    longt: f64,
     time: u64,
 }
 
@@ -121,8 +100,8 @@ impl GpsInfo {
     pub fn new() -> Self {
         Self {
             file_name: "".to_string(),
-            lat: Coordinate::new(),
-            longt: Coordinate::new(),
+            lat: 0.0,
+            longt: 0.0,
             time: 0,
         }
     }
@@ -339,6 +318,8 @@ fn process_gps_section(buffer: &mut BufReader, name: &String) -> Result<()> {
     let mut i: u16 = 0;
     let mut essentials: usize = 0;
     let mut waypoint: GpsInfo = GpsInfo::new();
+    let mut lat_sign: f64 = 1.0;
+    let mut longt_sign: f64 = 1.0;
 
     waypoint.file_name = name.to_string();
     while i < num_entries {
@@ -347,21 +328,25 @@ fn process_gps_section(buffer: &mut BufReader, name: &String) -> Result<()> {
         essentials += 1;
         match entry.tag {
             LAT_Q => match char::from_u32(entry.offset) {
-                Some(c) => waypoint.lat.quadrant = c,
+                Some(c) => {
+                    lat_sign = if c == 'S' { -1.0 } else { 1.0 };
+                }
                 None => {
                     eprintln!("Invalid latitued quadrant");
                     return Err(Error::from(ErrorKind::InvalidData));
                 }
             },
             LONG_Q => match char::from_u32(entry.offset) {
-                Some(c) => waypoint.longt.quadrant = c,
+                Some(c) => {
+                    longt_sign = if c == 'W' { -1.0 } else { 1.0 };
+                }
                 None => {
                     eprintln!("Invalid longitude quadrant");
                     return Err(Error::from(ErrorKind::InvalidData));
                 }
             },
-            LAT_V => waypoint.lat.get_from_ifd(buffer, entry.offset)?,
-            LONG_V => waypoint.longt.get_from_ifd(buffer, entry.offset)?,
+            LAT_V => waypoint.lat = f64_from_ifd(buffer, entry.offset)?,
+            LONG_V => waypoint.longt = f64_from_ifd(buffer, entry.offset)?,
             TIMESTAMP => waypoint.process_timestamp(buffer, entry.offset)?,
             DATESTAMP => waypoint.process_datestamp(buffer, entry.offset)?,
             _ => essentials -= 1,
@@ -369,6 +354,10 @@ fn process_gps_section(buffer: &mut BufReader, name: &String) -> Result<()> {
         i += 1;
     }
     if essentials == NUM_ESSENTIAL_ENTRIES {
+        // Update signs as needed.
+        waypoint.lat *= lat_sign;
+        waypoint.longt *= longt_sign;
+
         unsafe { WAYPOINTS.push(waypoint) };
     } else {
         eprintln!("Missing essential GPS entry/ies {}", waypoint);
@@ -469,19 +458,11 @@ fn print_time(time: u64, av: &mut AV) -> Result<()> {
 
 fn print_trackpoint(point: &GpsInfo, av: &mut AV) -> Result<()> {
     write!(av, "<trkpt ")?;
-
-    write!(av, "lat=\"")?;
-    if point.lat.quadrant == 'S' {
-        write!(av, "-")?;
-    }
-    write!(av, "{:2.5}\" ", point.lat.value)?;
-
-    write!(av, "lon=\"")?;
-    if point.longt.quadrant == 'W' {
-        write!(av, "-")?;
-    }
-    write!(av, "{:2.5}\"> ", point.longt.value)?;
-
+    write!(
+        av,
+        "lat=\"{:2.5}\" lon=\"{:2.5}\"> ",
+        point.lat, point.longt
+    )?;
     print_time(point.time, av)?;
     writeln!(av, "</trkpt>")
 }
