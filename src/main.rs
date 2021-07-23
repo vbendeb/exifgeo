@@ -398,12 +398,11 @@ fn handle_app1(f: &mut File, len: u16, name: &String) -> Result<()> {
 
 fn parse_file(name: &String) -> Result<()> {
     let mut f = File::open(name)?;
-    let err = Err(Error::from(ErrorKind::InvalidData));
 
     let t = read_tag(&mut f)?;
     if t != SOI {
         eprintln!("File {} does not seem to be a photo image file ", name);
-        return err;
+        return Ok(());
     }
 
     loop {
@@ -424,7 +423,7 @@ fn parse_file(name: &String) -> Result<()> {
             }
         }
     }
-    err
+    Ok(())
 }
 
 // GPS Date and time were combined and saved as number of seconds starting on
@@ -552,6 +551,11 @@ fn main() -> Result<()> {
 
     for f in &args[base..] {
         parse_file(f)?;
+    }
+
+    if unsafe { WAYPOINTS.len() } == 0 {
+        println!("No geotags found in input file(s)");
+        return Ok(());
     }
 
     // -n is a required option.
