@@ -9,3 +9,4 @@ edition = "2018"
 [dependencies]
 getopts = "0.2.21"
 arrayvec = "0.7.1"
+zerocopy = "0.6"

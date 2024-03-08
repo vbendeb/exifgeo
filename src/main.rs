@@ -4,6 +4,7 @@ use getopts::Options;
 use std::fs::File;
 use std::io::{Error, ErrorKind, Read, Result, Seek, SeekFrom, Write};
 use std::{char, env, fmt, slice, str};
+use zerocopy::AsBytes;
 
 const SOI: u16 = 0xffd8; // Start Of Image.
 const SOS: u16 = 0xffda; // Start Of Scan.
@@ -139,6 +140,7 @@ impl GpsInfo {
 
 #[repr(C)]
 #[repr(packed)]
+#[derive(AsBytes)]
 struct ExifBody {
     tiff: u16,
     size: u16,
@@ -147,15 +149,20 @@ struct ExifBody {
 
 impl ExifBody {
     fn tiff(&self) -> u16 {
-        self.tiff
+        u16::from_le_bytes([self.as_bytes()[0], self.as_bytes()[1]])
     }
 
     fn size(&self) -> u16 {
-        self.size
+        u16::from_le_bytes([self.as_bytes()[2], self.as_bytes()[3]])
     }
 
     fn offset(&self) -> u32 {
-        self.offset
+        u32::from_le_bytes([
+            self.as_bytes()[4],
+            self.as_bytes()[5],
+            self.as_bytes()[6],
+            self.as_bytes()[7],
+        ])
     }
 }
 
@@ -265,7 +272,6 @@ impl fmt::Display for IfdEntry {
 }
 
 impl fmt::Display for ExifBody {
-    #[allow(unaligned_references)]
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         write!(
             f,
@@ -353,7 +359,6 @@ fn process_gps_section(buffer: &mut BufReader, name: &String) -> Result<()> {
     Ok(())
 }
 
-#[allow(unaligned_references)]
 fn handle_app1(f: &mut File, len: u16, name: &String) -> Result<()> {
     const ADVANCE: u16 = 6;
     f.seek(SeekFrom::Current(ADVANCE as i64))?;
@@ -447,11 +452,7 @@ fn print_time(time: u64, av: &mut AV) -> Result<()> {
 
 fn print_trackpoint(point: &GpsInfo, av: &mut AV) -> Result<()> {
     write!(av, "<trkpt ")?;
-    write!(
-        av,
-        "lat=\"{:2.5}\" lon=\"{:2.5}\"> ",
-        point.lat, point.lon
-    )?;
+    write!(av, "lat=\"{:2.5}\" lon=\"{:2.5}\"> ", point.lat, point.lon)?;
     print_time(point.time, av)?;
     writeln!(av, "</trkpt>")
 }
