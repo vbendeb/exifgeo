@@ -13,8 +13,8 @@ const GPS: u16 = 0x8825; // GPS data.
 // GPS directory tags of interest.
 const LAT_Q: u16 = 1; // Latitude quadrant.
 const LAT_V: u16 = 2; // Latitude value.
-const LONG_Q: u16 = 3; // Longtitude quadrant.
-const LONG_V: u16 = 4; // Longtitude value;
+const LONG_Q: u16 = 3; // Longitude quadrant.
+const LONG_V: u16 = 4; // Longitude value;
 const TIMESTAMP: u16 = 7; // GPS timestamp.
 const DATESTAMP: u16 = 0x1d; // GPS Date.
 
@@ -63,7 +63,7 @@ fn f64_from_ifd(buf: &mut BufReader, offset: u32) -> Result<f64> {
 struct GpsInfo {
     file_name: String,
     lat: f64,
-    longt: f64,
+    lon: f64,
     time: u64,
 }
 
@@ -72,7 +72,7 @@ impl fmt::Display for GpsInfo {
         write!(
             f,
             "file: {} {} {} {}",
-            self.file_name, self.lat, self.longt, self.time
+            self.file_name, self.lat, self.lon, self.time
         )
     }
 }
@@ -101,7 +101,7 @@ impl GpsInfo {
         Self {
             file_name: "".to_string(),
             lat: 0.0,
-            longt: 0.0,
+            lon: 0.0,
             time: 0,
         }
     }
@@ -128,7 +128,7 @@ impl GpsInfo {
         let month = get_num(&date[5..7])?;
         let day = get_num(&date[8..10])?;
 
-        // Let's consider all month have 31 days.
+        // Let's consider all months have 31 days.
         self.time += year * 31 * 12 * 24 * 60 * 60;
         self.time += (month - 1) * 31 * 24 * 60 * 60;
         self.time += (day - 1) * 24 * 60 * 60;
@@ -145,6 +145,20 @@ struct ExifBody {
     offset: u32,
 }
 
+impl ExifBody {
+    fn tiff(&self) -> u16 {
+        self.tiff
+    }
+
+    fn size(&self) -> u16 {
+        self.size
+    }
+
+    fn offset(&self) -> u32 {
+        self.offset
+    }
+}
+
 #[repr(C)]
 #[repr(packed)]
 struct IfdEntry {
@@ -152,6 +166,24 @@ struct IfdEntry {
     typ_e: u16,
     count: u32,
     offset: u32,
+}
+
+impl IfdEntry {
+    fn tag(&self) -> u16 {
+        self.tag
+    }
+
+    fn typ_e(&self) -> u16 {
+        self.typ_e
+    }
+
+    fn count(&self) -> u32 {
+        self.count
+    }
+
+    fn offset(&self) -> u32 {
+        self.offset
+    }
 }
 
 struct BufReader {
@@ -220,23 +252,27 @@ fn str_len<T>() -> usize {
 }
 
 impl fmt::Display for IfdEntry {
-    #[allow(safe_packed_borrows)]
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         write!(
             f,
             "tag: {:04x}, type: {}, count {}, offset {}",
-            self.tag, self.typ_e, self.count, self.offset
+            self.tag(),
+            self.typ_e(),
+            self.count(),
+            self.offset()
         )
     }
 }
 
 impl fmt::Display for ExifBody {
-    #[allow(safe_packed_borrows)]
+    #[allow(unaligned_references)]
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         write!(
             f,
             "tiff {:x}, size {}, offset {}",
-            self.tiff, self.size, self.offset
+            self.tiff(),
+            self.size(),
+            self.offset()
         )
     }
 }
@@ -263,38 +299,6 @@ fn read_struct<T, R: Read>(f: &mut R) -> Result<T> {
     }
 }
 
-/*
-#[allow(deprecated)]
-fn read_buf(mut f: &File, num_bytes: usize) -> Result<*mut u8> {
-    unsafe {
-        let s = ::std::mem::uninitialized();
-        let buffer = slice::from_raw_parts_mut(s as *mut u8, num_bytes);
-        match f.read_exact(buffer) {
-            Ok(()) => Ok(s),
-            Err(e) => {
-                ::std::mem::forget(s);
-                Err(e)
-            }
-        }
-    }
-}
-
-fn read_struct<T>(mut f: &File) -> Result<T> {
-    let num_bytes = ::std::mem::size_of::<T>();
-    unsafe {
-        let mut s = MaybeUninit::<T>::uninit();
-        let buffer = slice::from_raw_parts_mut(s.as_mut_ptr() as *mut u8, num_bytes);
-        match f.read_exact(buffer) {
-            Ok(()) => Ok(*s.as_mut_ptr()),
-            Err(e) => {
-                ::std::mem::forget(s);
-                Err(e)
-            }
-        }
-    }
-}
-*/
-
 fn read_u16<T: Read>(f: &mut T) -> Result<u16> {
     let mut tag = [0u8; 2];
     f.read(&mut tag)?;
@@ -313,7 +317,7 @@ fn process_gps_section(buffer: &mut BufReader, name: &String) -> Result<()> {
     let mut essentials: usize = 0;
     let mut waypoint: GpsInfo = GpsInfo::new();
     let mut lat_sign: f64 = 1.0;
-    let mut longt_sign: f64 = 1.0;
+    let mut lon_sign: f64 = 1.0;
 
     waypoint.file_name = name.to_string();
     while i < num_entries {
@@ -327,10 +331,10 @@ fn process_gps_section(buffer: &mut BufReader, name: &String) -> Result<()> {
             }
             LONG_Q => {
                 let c = char::from_u32(entry.offset).expect("Bad long_q value");
-                longt_sign = if c == 'W' { -1.0 } else { 1.0 };
+                lon_sign = if c == 'W' { -1.0 } else { 1.0 };
             }
             LAT_V => waypoint.lat = f64_from_ifd(buffer, entry.offset)?,
-            LONG_V => waypoint.longt = f64_from_ifd(buffer, entry.offset)?,
+            LONG_V => waypoint.lon = f64_from_ifd(buffer, entry.offset)?,
             TIMESTAMP => waypoint.process_timestamp(buffer, entry.offset)?,
             DATESTAMP => waypoint.process_datestamp(buffer, entry.offset)?,
             _ => essentials -= 1,
@@ -340,7 +344,7 @@ fn process_gps_section(buffer: &mut BufReader, name: &String) -> Result<()> {
     if essentials == NUM_ESSENTIAL_ENTRIES {
         // Update signs as needed.
         waypoint.lat *= lat_sign;
-        waypoint.longt *= longt_sign;
+        waypoint.lon *= lon_sign;
 
         unsafe { WAYPOINTS.push(waypoint) };
     } else {
@@ -349,7 +353,7 @@ fn process_gps_section(buffer: &mut BufReader, name: &String) -> Result<()> {
     Ok(())
 }
 
-#[allow(safe_packed_borrows)]
+#[allow(unaligned_references)]
 fn handle_app1(f: &mut File, len: u16, name: &String) -> Result<()> {
     const ADVANCE: u16 = 6;
     f.seek(SeekFrom::Current(ADVANCE as i64))?;
@@ -381,6 +385,7 @@ fn handle_app1(f: &mut File, len: u16, name: &String) -> Result<()> {
 }
 
 fn parse_file(name: &String) -> Result<()> {
+    println!("Parsing {}", name);
     let mut f = File::open(name)?;
 
     let t = read_tag(&mut f)?;
@@ -407,6 +412,7 @@ fn parse_file(name: &String) -> Result<()> {
             }
         }
     }
+    println!("{} done", name);
     Ok(())
 }
 
@@ -444,7 +450,7 @@ fn print_trackpoint(point: &GpsInfo, av: &mut AV) -> Result<()> {
     write!(
         av,
         "lat=\"{:2.5}\" lon=\"{:2.5}\"> ",
-        point.lat, point.longt
+        point.lat, point.lon
     )?;
     print_time(point.time, av)?;
     writeln!(av, "</trkpt>")
@@ -528,7 +534,7 @@ fn main() -> Result<()> {
         return Ok(());
     }
 
-    if matches.opt_present("m") {
+    if !matches.opt_present("m") {
         eprintln!("Error: map name argument is required");
         return Err(Error::from(ErrorKind::InvalidData));
     }
@@ -548,7 +554,7 @@ fn main() -> Result<()> {
     }
 
     // -n is a required option.
-    let map_name = matches.opt_str("n").unwrap();
+    let map_name = matches.opt_str("m").unwrap();
     let mut buf = AV::new();
     print_xml(&mut buf, &map_name)?;
 
