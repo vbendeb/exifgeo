@@ -32,7 +32,7 @@ fn floats_from_rational(buf: &mut BufReader, offset: u32, floats: &mut [f64]) ->
     let mut i: usize = 0;
 
     if floats.len() != 3 {
-        return Err(Error::from(ErrorKind::InvalidData));
+        return Err(ErrorKind::InvalidData.into());
     }
 
     buf.save_cursor();
@@ -61,6 +61,7 @@ fn f64_from_ifd(buf: &mut BufReader, offset: u32) -> Result<f64> {
     Ok(value as f64 / 100000.0)
 }
 
+#[derive(Clone)]
 struct GpsInfo {
     file_name: String,
     lat: f64,
@@ -83,14 +84,14 @@ fn get_num(bytes: &[u8]) -> Result<u64> {
         Ok(v) => v,
         Err(_) => {
             eprintln!("failed to convert to string {:?}", bytes);
-            return Err(Error::from(ErrorKind::InvalidData));
+            return Err(ErrorKind::InvalidData.into());
         }
     };
     let the_number: u64 = match the_string.parse() {
         Ok(v) => v,
         Err(_) => {
             eprintln!("failed to convert to number {}", the_string);
-            return Err(Error::from(ErrorKind::InvalidData));
+            return Err(ErrorKind::InvalidData.into());
         }
     };
 
@@ -198,8 +199,6 @@ struct BufReader {
     cursor: usize,
     buffer: Vec<u8>,
 }
-
-static mut WAYPOINTS: Vec<GpsInfo> = Vec::new();
 
 impl BufReader {
     pub fn init(&mut self, mut f: &File, size: usize) -> Result<()> {
@@ -317,7 +316,7 @@ fn read_tag<T: Read>(f: &mut T) -> Result<u16> {
     Ok(u16::from_be_bytes(tag))
 }
 
-fn process_gps_section(buffer: &mut BufReader, name: &String) -> Result<()> {
+fn process_gps_section(buffer: &mut BufReader, name: &str) -> Result<GpsInfo> {
     let num_entries = read_u16(buffer)?;
     let mut i: u16 = 0;
     let mut essentials: usize = 0;
@@ -352,14 +351,15 @@ fn process_gps_section(buffer: &mut BufReader, name: &String) -> Result<()> {
         waypoint.lat *= lat_sign;
         waypoint.lon *= lon_sign;
 
-        unsafe { WAYPOINTS.push(waypoint) };
+        Ok(waypoint)
     } else {
         eprintln!("Missing essential GPS entry/ies {}", waypoint);
+        // THis should not stop processing.
+        Err(ErrorKind::Other.into())
     }
-    Ok(())
 }
 
-fn handle_app1(f: &mut File, len: u16, name: &String) -> Result<()> {
+fn handle_app1(f: &mut File, len: u16, name: &str) -> Result<GpsInfo> {
     const ADVANCE: u16 = 6;
     f.seek(SeekFrom::Current(ADVANCE as i64))?;
     let mut buffer = BufReader {
@@ -370,55 +370,51 @@ fn handle_app1(f: &mut File, len: u16, name: &String) -> Result<()> {
 
     buffer.init(&f, (len - ADVANCE) as usize)?;
     let eb = read_struct::<ExifBody, BufReader>(&mut buffer)?;
-    if !eb.is_valid() {
-        eprintln!("{}: Bad exif header: {}", name, eb);
-        return Ok(());
-    }
-
-    let mut num_entries = read_u16(&mut buffer)?;
-    while num_entries != 0 {
-        let entry = read_struct::<IfdEntry, BufReader>(&mut buffer)?;
-        if entry.tag == GPS {
-            buffer.set_cursor(entry.offset as usize)?;
-            process_gps_section(&mut buffer, name)?;
-            return Ok(());
+    if eb.is_valid() {
+        let mut num_entries = read_u16(&mut buffer)?;
+        while num_entries != 0 {
+            let entry = read_struct::<IfdEntry, BufReader>(&mut buffer)?;
+            if entry.tag == GPS {
+                buffer.set_cursor(entry.offset as usize)?;
+                return process_gps_section(&mut buffer, name);
+            }
+            num_entries = num_entries - 1;
         }
-        num_entries = num_entries - 1;
+        eprintln!("No GPS section found in {}", name);
+    } else {
+        eprintln!("{}: Bad exif header: {}", name, eb);
     }
-    eprintln!("No GPS section found in {}", name);
-    Ok(())
+    Err(ErrorKind::Other.into())
 }
 
-fn parse_file(name: &String) -> Result<()> {
+fn parse_file(name: &str) -> Result<GpsInfo> {
     println!("Parsing {}", name);
     let mut f = File::open(name)?;
 
     let t = read_tag(&mut f)?;
-    if t != SOI {
+    if t == SOI {
+        loop {
+            let t = read_tag(&mut f)?;
+
+            if t == SOS {
+                break;
+            }
+            let len = read_tag(&mut f)? - 2;
+
+            match t {
+                APP1 => {
+                    return handle_app1(&mut f, len, name);
+                }
+                _ => {
+                    f.seek(SeekFrom::Current(i64::from(len)))?;
+                }
+            }
+        }
+        println!("{} done", name);
+    } else {
         eprintln!("File {} does not seem to be a photo image file ", name);
-        return Ok(());
     }
-
-    loop {
-        let t = read_tag(&mut f)?;
-
-        if t == SOS {
-            break;
-        }
-        let len = read_tag(&mut f)? - 2;
-
-        match t {
-            APP1 => {
-                handle_app1(&mut f, len, name)?;
-                return Ok(());
-            }
-            _ => {
-                f.seek(SeekFrom::Current(i64::from(len)))?;
-            }
-        }
-    }
-    println!("{} done", name);
-    Ok(())
+    Err(ErrorKind::Other.into())
 }
 
 // GPS Date and time were combined and saved as number of seconds starting on
@@ -457,7 +453,7 @@ fn print_trackpoint(point: &GpsInfo, av: &mut AV) -> Result<()> {
     writeln!(av, "</trkpt>")
 }
 
-fn print_track(track: &Vec<&GpsInfo>, av: &mut AV, map_name: &String) -> Result<()> {
+fn print_track(track: &Vec<&GpsInfo>, av: &mut AV, map_name: &str) -> Result<()> {
     writeln!(av, "<trk>")?;
     writeln!(av, "<name>{}</name><number>1</number>", map_name)?;
     writeln!(av, "<trkseg>")?;
@@ -468,7 +464,7 @@ fn print_track(track: &Vec<&GpsInfo>, av: &mut AV, map_name: &String) -> Result<
     writeln!(av, "</trk>")
 }
 
-fn print_gpx(track: &Vec<&GpsInfo>, av: &mut AV, map_name: &String) -> Result<()> {
+fn print_gpx(track: &Vec<&GpsInfo>, av: &mut AV, map_name: &str) -> Result<()> {
     writeln!(
         av,
         "<gpx version=\"1.1\" creator=\"git@github.com:vbendeb/exifgeo.git\">"
@@ -478,17 +474,15 @@ fn print_gpx(track: &Vec<&GpsInfo>, av: &mut AV, map_name: &String) -> Result<()
     writeln!(av, "</gpx>")
 }
 
-fn print_xml(av: &mut AV, map_name: &String) -> Result<()> {
+fn print_xml(av: &mut AV, map_name: &str, waypoints: &Vec<GpsInfo>) -> Result<()> {
     let mut filtered: Vec<&GpsInfo> = Vec::new();
+    let mut wp = waypoints.clone();
+    wp.sort_by(|a, b| a.time.cmp(&b.time));
+    filtered.push(&wp[0]);
 
-    unsafe {
-        WAYPOINTS.sort_by(|a, b| a.time.cmp(&b.time));
-        filtered.push(&WAYPOINTS[0]);
-
-        for i in 1..WAYPOINTS.len() {
-            if WAYPOINTS[i].time != WAYPOINTS[i - 1].time {
-                filtered.push(&WAYPOINTS[i]);
-            }
+    for i in 1..waypoints.len() {
+        if wp[i].time != wp[i - 1].time {
+            filtered.push(&wp[i]);
         }
     }
     writeln!(
@@ -521,12 +515,13 @@ fn main() -> Result<()> {
     let args: Vec<String> = env::args().collect();
     let o = prepare_opts();
     let mut base = 3; // If only the required arg is given.
+    let mut waypoints: Vec<GpsInfo> = Vec::new();
 
     let matches = match o.parse(&args[1..]) {
         Ok(m) => m,
         Err(f) => {
             eprintln!("{}", f.to_string());
-            return Err(Error::from(ErrorKind::InvalidData));
+            return Err(ErrorKind::InvalidData.into());
         }
     };
 
@@ -537,7 +532,7 @@ fn main() -> Result<()> {
 
     if !matches.opt_present("m") {
         eprintln!("Error: map name argument is required");
-        return Err(Error::from(ErrorKind::InvalidData));
+        return Err(ErrorKind::InvalidData.into());
     }
 
     base += match matches.opt_str("o") {
@@ -546,10 +541,18 @@ fn main() -> Result<()> {
     };
 
     for f in &args[base..] {
-        parse_file(f)?;
+        match parse_file(f) {
+            Ok(wp) => waypoints.push(wp),
+            Err(x) => {
+                if x.kind() != ErrorKind::Other {
+                    return Err(x);
+                }
+                println!("some innocuous error");
+            }
+        };
     }
 
-    if unsafe { WAYPOINTS.len() } == 0 {
+    if waypoints.len() == 0 {
         println!("No geotags found in input file(s)");
         return Ok(());
     }
@@ -557,7 +560,7 @@ fn main() -> Result<()> {
     // -n is a required option.
     let map_name = matches.opt_str("m").unwrap();
     let mut buf = AV::new();
-    print_xml(&mut buf, &map_name)?;
+    print_xml(&mut buf, &map_name, &waypoints)?;
 
     let txt = std::str::from_utf8(&buf).unwrap();
     match matches.opt_str("o") {
@@ -578,15 +581,25 @@ mod tests {
 
     #[test]
     fn test_parse_file() -> Result<()> {
-        for i in 0..4 {
+        let mut waypoints: Vec<GpsInfo> = Vec::new();
+
+        for i in 0..5 {
             let test_data: String = format!("src/test_data/test{}.jpg", i);
 
-            parse_file(&test_data)?;
+            match parse_file(&test_data) {
+                Ok(wp) => waypoints.push(wp),
+                Err(x) => {
+                    if x.kind() != ErrorKind::Other {
+                        return Err(x);
+                    }
+                    println!("some innocuous error");
+                }
+            };
         }
 
         let mut buf: AV = AV::new();
         let map_name = String::from("Test map");
-        print_xml(&mut buf, &map_name)?;
+        print_xml(&mut buf, &map_name, &waypoints)?;
 
         let expected: String =
             fs::read_to_string("src/test_data/result.txt").expect("Failed to read result.txt");
@@ -594,7 +607,9 @@ mod tests {
         if expected == std::str::from_utf8(&buf).unwrap() {
             Ok(())
         } else {
-            Err(Error::from(ErrorKind::InvalidData))
+            println!("result:\n{}\n", std::str::from_utf8(&buf).unwrap());
+            println!("expected:\n{}", expected);
+            Err(ErrorKind::InvalidData.into())
         }
     }
 }
