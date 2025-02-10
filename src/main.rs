@@ -63,7 +63,6 @@ fn f64_from_ifd(buf: &mut BufReader, offset: u32) -> Result<f64> {
 
 #[derive(Clone)]
 struct GpsInfo {
-    file_name: String,
     lat: f64,
     lon: f64,
     time: u64,
@@ -71,11 +70,7 @@ struct GpsInfo {
 
 impl fmt::Display for GpsInfo {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        write!(
-            f,
-            "file: {} {} {} {}",
-            self.file_name, self.lat, self.lon, self.time
-        )
+        write!(f, "file: {} {} {}", self.lat, self.lon, self.time)
     }
 }
 
@@ -101,7 +96,6 @@ fn get_num(bytes: &[u8]) -> Result<u64> {
 impl GpsInfo {
     pub fn new() -> Self {
         Self {
-            file_name: "".to_string(),
             lat: 0.0,
             lon: 0.0,
             time: 0,
@@ -316,7 +310,7 @@ fn read_tag<T: Read>(f: &mut T) -> Result<u16> {
     Ok(u16::from_be_bytes(tag))
 }
 
-fn process_gps_section(buffer: &mut BufReader, name: &str) -> Result<GpsInfo> {
+fn process_gps_section(buffer: &mut BufReader) -> Result<GpsInfo> {
     let num_entries = read_u16(buffer)?;
     let mut i: u16 = 0;
     let mut essentials: usize = 0;
@@ -324,7 +318,6 @@ fn process_gps_section(buffer: &mut BufReader, name: &str) -> Result<GpsInfo> {
     let mut lat_sign: f64 = 1.0;
     let mut lon_sign: f64 = 1.0;
 
-    waypoint.file_name = name.to_string();
     while i < num_entries {
         let entry = read_struct::<IfdEntry, BufReader>(buffer)?;
 
@@ -376,7 +369,7 @@ fn handle_app1(f: &mut File, len: u16, name: &str) -> Result<GpsInfo> {
             let entry = read_struct::<IfdEntry, BufReader>(&mut buffer)?;
             if entry.tag == GPS {
                 buffer.set_cursor(entry.offset as usize)?;
-                return process_gps_section(&mut buffer, name);
+                return process_gps_section(&mut buffer);
             }
             num_entries = num_entries - 1;
         }
