@@ -1,6 +1,7 @@
 extern crate getopts;
 use arrayvec::ArrayVec;
 use getopts::Options;
+use std::f64::consts::PI;
 use std::fs::File;
 use std::io::{Error, ErrorKind, Read, Result, Seek, SeekFrom, Write};
 use std::{char, env, fmt, slice, str};
@@ -18,7 +19,7 @@ const LONG_Q: u16 = 3; // Longitude quadrant.
 const LONG_V: u16 = 4; // Longitude value;
 const TIMESTAMP: u16 = 7; // GPS timestamp.
 const DATESTAMP: u16 = 0x1d; // GPS Date.
-
+const DISTANCE_DIFF: u32 = 5u32; // Waypoints within 5 m are ignored.
 const NUM_ESSENTIAL_ENTRIES: usize = 6;
 
 // When running in test mode stack size is reduced.
@@ -130,6 +131,27 @@ impl GpsInfo {
         self.time += (day - 1) * 24 * 60 * 60;
 
         Ok(())
+    }
+
+    // distance in meters.
+    fn distance_from(&self, other: &GpsInfo) -> u32 {
+        // φ is latitude, λ is longitude, in radians.
+        // R is the radius of the globe, 6,371 km
+        //a = sin²(Δφ/2) + cos φ1 ⋅ cos φ2 ⋅ sin²(Δλ/2)
+        //c = 2 ⋅ atan2( √a, √(1−a) )
+        //d = R ⋅ c
+        let lat1 = (self.lat * PI) / 180.0;
+        let lon1 = (self.lon * PI) / 180.0;
+        let lat2 = (other.lat * PI) / 180.0;
+        let lon2 = (other.lon * PI) / 180.0;
+        let dlat = (lat1 - lat2) / 2.0;
+        let dlon = (lon1 - lon2) / 2.0;
+
+        let a = dlat.sin() * dlat.sin() + lat1.cos() * lat2.cos() * dlon.sin() * dlon.sin();
+        let sq_a = a.sqrt();
+        let sq_1_minus_a = (1.0 - a).sqrt();
+        let c = 2.0 * sq_a.atan2(sq_1_minus_a);
+        (6371000.0 * c) as u32
     }
 }
 
@@ -472,16 +494,22 @@ fn print_xml(av: &mut AV, map_name: &str, waypoints: &Vec<GpsInfo>) -> Result<()
     let mut wp = waypoints.clone();
     wp.sort_by(|a, b| a.time.cmp(&b.time));
     filtered.push(&wp[0]);
+    let mut duplicates = 0u32;
 
-    for i in 1..waypoints.len() {
-        if wp[i].time != wp[i - 1].time {
+    for i in 1..wp.len() {
+        // Filter out sequential photos taken closer than 5 meters away from
+        // each other.
+        if wp[i].distance_from(&wp[i - 1]) > DISTANCE_DIFF {
             filtered.push(&wp[i]);
+            continue;
         }
+        duplicates += 1;
     }
     writeln!(
         av,
         "<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\" ?>"
     )?;
+    println!("dropped {duplicates} duplicate entries");
     print_gpx(&filtered, av, map_name)
 }
 
@@ -558,6 +586,9 @@ fn main() -> Result<()> {
     let txt = std::str::from_utf8(&buf).unwrap();
     match matches.opt_str("o") {
         Some(name) => {
+            if !&name.ends_with(".gpx") {
+                println!("Note that mymaps.google.com expects file name to be *.gpx");
+            }
             let mut f = File::create(name)?;
             f.write(&buf)?;
         }
@@ -604,5 +635,28 @@ mod tests {
             println!("expected:\n{}", expected);
             Err(ErrorKind::InvalidData.into())
         }
+    }
+
+    #[test]
+    fn test_distance_calc() {
+        // At 45 degree of longitude one degree is 78,85 km, at the equator it
+        // is 111 km, the same as one degree of latitude anywhere. We want to
+        // make sure that the resolution is around 5 m.
+        let degree_lon_at_45 = 78850.0;
+        let degree_lon_at_0 = 111000.0;
+        let allowed_delta = 0.004;
+        let mut wp0 = GpsInfo::new();
+        let mut wp1 = GpsInfo::new();
+
+        // One degree on the equator.
+        wp0.lon = 1.0;
+        assert!(delta_ratio(degree_lon_at_0, &wp0, &wp1) < allowed_delta);
+        wp0.lat = 45.0;
+        wp1.lat = 45.0;
+        assert!(delta_ratio(degree_lon_at_45, &wp0, &wp1) < allowed_delta);
+    }
+
+    fn delta_ratio(base: f64, wp0: &GpsInfo, wp1: &GpsInfo) -> f64 {
+        ((base - wp0.distance_from(wp1) as f64) / base).abs()
     }
 }
